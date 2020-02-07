@@ -1,7 +1,7 @@
 from __future__ import print_function, division
-import keras
 import cv2
 import numpy as np
+from functools import reduce
 
 def gen_real_samples(real_X, n_samples):
     # gen random idxs
@@ -13,9 +13,10 @@ def gen_real_samples(real_X, n_samples):
 
 def gen_noise_samples(inp_shape, n_samples):
     mini_X = np.random.rand(reduce((lambda x,y: x*y), inp_shape) * n_samples)
+    # scale to -1 to +1
+    mini_X = (mini_X - 0.5) * 2
     shap = [n_samples] + list(inp_shape)
     mini_X = mini_X.reshape(tuple(shap))
-    # scale to -1 to +1
     # gen fake labels
     mini_Y = np.zeros((n_samples,1))
     return mini_X, mini_Y
@@ -33,7 +34,7 @@ def pre_train_discriminator(dis_model, real_X, n_iter, n_batch, inp_shape):
         history[i-1] = np.array((real_acc, fake_acc)) * 100
         if i%10 == 0:
             real_acc, fake_acc = real_acc*100, fake_acc*100
-            print('Pre-training Discriminator: n: %d RealAcc: %.2f FakeAcc: %.2f Combined: %.2f'%
+            print('Pre-training Discriminator: step: %d RealAcc: %.2f FakeAcc: %.2f Combined: %.2f'%
                 (i, real_acc, fake_acc, np.mean((real_acc, fake_acc))))
     return history
 
@@ -52,22 +53,25 @@ def gen_fake_samples(gen_model, latent_dim, n_samples):
     mini_fake_y = np.zeros((n_samples, 1))
     return mini_fake_x, mini_fake_y
 
-def train_gan(gen_model, dis_model, gan_model, real_X, latent_dim, n_epochs, n_batch, debug=False):
+def train_gan(gen_model, dis_model, gan_model, real_X, latent_dim, n_epochs, n_batch, debug=False,
+        log_file_name='gan'):
     batch_per_epoch = int(real_X.shape[0]/n_batch)
     half_batch = int(n_batch/2)
+    log_file = open(log_file_name + '_logs.txt', 'w')
 
     if debug:
         rows,cols = 10,10
         show_x_latents = gen_latent_points(latent_dim, rows*cols)
-        img_size = rows*real_X.shape[1], cols*real_X.shape[2]
-        video = cv2.VideoWriter('gan_training.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'),24,
-                (800,900), False)
+        img_size = rows*real_X.shape[1] + 30, cols*real_X.shape[2]
+        video = cv2.VideoWriter(log_file_name+'.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'),
+                24, (img_size[1],img_size[0]), False)
         debug_img = np.zeros(img_size, dtype=np.uint8)
-        disp_img = np.zeros((900,800), dtype=np.uint8)
         cv2.namedWindow('Training Debug', cv2.WINDOW_NORMAL)
+        update_counter = 0
 
     for epoch in range(n_epochs):
         for batch in range(batch_per_epoch):
+            update_counter += 1
             # sampling random real samples
             mini_X_real, mini_Y_real = gen_real_samples(real_X, half_batch)
             # sampling fake
@@ -83,21 +87,27 @@ def train_gan(gen_model, dis_model, gan_model, real_X, latent_dim, n_epochs, n_b
             gen_loss = gan_model.train_on_batch(x_latent, y_latent)
             disp = "E:%d/%d B:%d/%d D:%.3f G:%.3f"%(epoch+1, n_epochs, batch,
                 batch_per_epoch, dis_loss, gen_loss)
+            log_file.write(disp + '\n')
             print(disp)
-            if debug:
-                disp_img[:100,:] *= 0
-                cv2.putText(disp_img,disp, (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
+            if debug and update_counter%10==0:
                 fake_samples = gen_model.predict(show_x_latents)
-                fake_samples = np.uint8(fake_samples*255)
+                fake_samples = np.uint8(fake_samples*127.5 + 127.5)
                 fake_samples = fake_samples.reshape(fake_samples.shape[:-1])
                 for i in range(rows*cols):
                     row_i, col_i = i // rows, i % cols
-                    row_i, col_i = row_i*real_X.shape[1], col_i*real_X.shape[2]
+                    row_i, col_i = row_i*real_X.shape[1] + 30, col_i*real_X.shape[2]
                     row_j, col_j = row_i+real_X.shape[1], col_i+real_X.shape[2]
                     debug_img[row_i:row_j, col_i:col_j] = fake_samples[i]
-                disp_img[100:,:] = cv2.resize(debug_img, (800,800))
-                cv2.imshow('Training Debug', disp_img)
+                debug_img[:30,:] *= 0
+                cv2.putText(debug_img,"E:%d B:%d D:%.3f G:%.3f"%(epoch+1, batch+1, dis_loss,
+                    gen_loss),
+                     (5,23), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                cv2.imshow('Training Debug', debug_img)
                 cv2.waitKey(1)
-                video.write(disp_img)
+                video.write(debug_img)
+        gen_model.save(log_file_name + '_generator.h5')
+        dis_model.save(log_file_name + '_discriminator.h5')
     if debug:
         cv2.destroyAllWindows()
+        log_file.close()
+        video.release()
