@@ -1,4 +1,4 @@
-# gan_mnist
+# gan-mnist
 
 GAN Implementation in Tensorflow Keras
 
